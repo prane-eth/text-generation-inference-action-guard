@@ -8,6 +8,8 @@ from typing import Dict, Optional, List, AsyncIterator, Iterator, Union
 
 from text_generation import DEPRECATION_WARNING
 from text_generation.types import (
+    ActionGuardDecision,
+    AgentActionGuard,
     StreamResponse,
     Response,
     Request,
@@ -21,8 +23,9 @@ from text_generation.types import (
     ChatComplete,
     Message,
     Tool,
+    ToolCall,
 )
-from text_generation.errors import parse_error
+from text_generation.errors import parse_error, ValidationError as ClientValidationError
 
 # emit deprecation warnings
 warnings.simplefilter("always", DeprecationWarning)
@@ -177,6 +180,7 @@ class Client:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         tools: Optional[List[Tool]] = None,
+        action_guard: Optional[AgentActionGuard] = None,
         tool_prompt: Optional[str] = None,
         tool_choice: Optional[str] = None,
         stop: Optional[List[str]] = None,
@@ -218,6 +222,9 @@ class Client:
                 higher are kept for generation
             tools (`List[Tool]`):
                 List of tools to use
+            action_guard (`Callable[[ToolCall], GuardDecision]`):
+                Optional callable invoked for each pending tool. Return `GuardDecision.BLOCK` to
+                prevent the request from being sent for blocked tool calls.
             tool_prompt (`str`):
                 A prompt to be appended before the tools
             tool_choice (`str`):
@@ -257,11 +264,42 @@ class Client:
             payload = resp.json()
             if resp.status_code != 200:
                 raise parse_error(resp.status_code, payload)
-            return ChatComplete(**payload)
+            chat = ChatComplete(**payload)
+            # Validate any tool-calls present in the server response
+            if action_guard is not None:
+                for choice in chat.choices:
+                    if getattr(choice, "message", None) is not None:
+                        tool_calls = choice.message.tool_calls
+                        if tool_calls:
+                            for raw in tool_calls:
+                                try:
+                                    tc = (
+                                        ToolCall(**raw)
+                                        if isinstance(raw, dict)
+                                        else ToolCall(
+                                            id=raw.id,
+                                            type=raw.type,
+                                            function=raw.function,
+                                        )
+                                    )
+                                except Exception:
+                                    tc = ToolCall(
+                                        id=0,
+                                        type=getattr(raw, "type", ""),
+                                        function=getattr(raw, "function", {}),
+                                    )
+                                decision = action_guard(tc)
+                                if decision == ActionGuardDecision.BLOCK:
+                                    raise ClientValidationError(
+                                        "Tool call blocked by action_guard in response"
+                                    )
+            return chat
         else:
-            return self._chat_stream_response(request)
+            return self._chat_stream_response(request, action_guard=action_guard)
 
-    def _chat_stream_response(self, request):
+    def _chat_stream_response(
+        self, request, action_guard: Optional[AgentActionGuard] = None
+    ):
         resp = requests.post(
             f"{self.base_url}/v1/chat/completions",
             json=request.dict(),
@@ -279,6 +317,33 @@ class Client:
                 json_payload = json.loads(payload.lstrip("data:").rstrip("\n"))
                 try:
                     response = ChatCompletionChunk(**json_payload)
+                    # Check for tool-calls in streamed chunk and validate
+                    if action_guard is not None:
+                        for choice in response.choices:
+                            delta = getattr(choice, "delta", None)
+                            if delta is not None and getattr(delta, "tool_calls", None):
+                                for raw in delta.tool_calls:
+                                    try:
+                                        # raw may be a dict-like or a ChoiceDeltaToolCall
+                                        if isinstance(raw, dict):
+                                            tc = ToolCall(**raw)
+                                        else:
+                                            tc = ToolCall(
+                                                id=int(getattr(raw, "id", 0)),
+                                                type=getattr(raw, "type", ""),
+                                                function=getattr(raw, "function", {}),
+                                            )
+                                    except Exception:
+                                        tc = ToolCall(
+                                            id=0,
+                                            type=getattr(raw, "type", ""),
+                                            function=getattr(raw, "function", {}),
+                                        )
+                                    decision = action_guard(tc)
+                                    if decision == ActionGuardDecision.BLOCK:
+                                        raise ClientValidationError(
+                                            "Tool call blocked by action_guard in stream"
+                                        )
                     yield response
                 except ValidationError:
                     raise parse_error(resp.status, json_payload)
@@ -659,6 +724,7 @@ class AsyncClient:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         tools: Optional[List[Tool]] = None,
+        action_guard: Optional[AgentActionGuard] = None,
         tool_prompt: Optional[str] = None,
         tool_choice: Optional[str] = None,
         stop: Optional[List[str]] = None,
@@ -700,6 +766,9 @@ class AsyncClient:
                 higher are kept for generation
             tools (`List[Tool]`):
                 List of tools to use
+            action_guard (`Callable[[ToolCall], GuardDecision]`):
+                Optional callable invoked for each pending tool. Return `GuardDecision.BLOCK` to
+                prevent the request from being sent for blocked tool calls.
             tool_prompt (`str`):
                 A prompt to be appended before the tools
             tool_choice (`str`):
@@ -729,11 +798,13 @@ class AsyncClient:
             stop=stop,
         )
         if not stream:
-            return await self._chat_single_response(request)
+            return await self._chat_single_response(request, action_guard=action_guard)
         else:
-            return self._chat_stream_response(request)
+            return self._chat_stream_response(request, action_guard=action_guard)
 
-    async def _chat_single_response(self, request):
+    async def _chat_single_response(
+        self, request, action_guard: Optional[AgentActionGuard] = None
+    ):
         async with ClientSession(
             headers=self.headers, cookies=self.cookies, timeout=self.timeout
         ) as session:
@@ -743,9 +814,39 @@ class AsyncClient:
                 payload = await resp.json()
                 if resp.status != 200:
                     raise parse_error(resp.status, payload)
-                return ChatComplete(**payload)
+                chat = ChatComplete(**payload)
+                if action_guard is not None:
+                    for choice in chat.choices:
+                        if getattr(choice, "message", None) is not None:
+                            tool_calls = choice.message.tool_calls
+                            if tool_calls:
+                                for raw in tool_calls:
+                                    try:
+                                        tc = (
+                                            ToolCall(**raw)
+                                            if isinstance(raw, dict)
+                                            else ToolCall(
+                                                id=raw.id,
+                                                type=raw.type,
+                                                function=raw.function,
+                                            )
+                                        )
+                                    except Exception:
+                                        tc = ToolCall(
+                                            id=0,
+                                            type=getattr(raw, "type", ""),
+                                            function=getattr(raw, "function", {}),
+                                        )
+                                    decision = action_guard(tc)
+                                    if decision == ActionGuardDecision.BLOCK:
+                                        raise ClientValidationError(
+                                            "Tool call blocked by action_guard in response"
+                                        )
+                return chat
 
-    async def _chat_stream_response(self, request):
+    async def _chat_stream_response(
+        self, request, action_guard: Optional[AgentActionGuard] = None
+    ):
         async with ClientSession(
             headers=self.headers, cookies=self.cookies, timeout=self.timeout
         ) as session:
@@ -765,6 +866,38 @@ class AsyncClient:
                         json_payload = json.loads(payload_data)
                         try:
                             response = ChatCompletionChunk(**json_payload)
+                            # Validate tool-calls in chunk
+                            if action_guard is not None:
+                                for choice in response.choices:
+                                    delta = getattr(choice, "delta", None)
+                                    if delta is not None and getattr(
+                                        delta, "tool_calls", None
+                                    ):
+                                        for raw in delta.tool_calls:
+                                            try:
+                                                if isinstance(raw, dict):
+                                                    tc = ToolCall(**raw)
+                                                else:
+                                                    tc = ToolCall(
+                                                        id=int(getattr(raw, "id", 0)),
+                                                        type=getattr(raw, "type", ""),
+                                                        function=getattr(
+                                                            raw, "function", {}
+                                                        ),
+                                                    )
+                                            except Exception:
+                                                tc = ToolCall(
+                                                    id=0,
+                                                    type=getattr(raw, "type", ""),
+                                                    function=getattr(
+                                                        raw, "function", {}
+                                                    ),
+                                                )
+                                            decision = action_guard(tc)
+                                            if decision == ActionGuardDecision.BLOCK:
+                                                raise ClientValidationError(
+                                                    "Tool call blocked by action_guard in stream"
+                                                )
                             yield response
                         except ValidationError:
                             raise parse_error(resp.status, json_payload)

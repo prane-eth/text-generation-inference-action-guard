@@ -1,6 +1,7 @@
 from enum import Enum
-from pydantic import BaseModel, field_validator, ConfigDict
-from typing import Optional, List, Union, Any
+from typing import Any, Callable, List, Optional, Union
+
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from text_generation.errors import ValidationError
 
@@ -26,6 +27,15 @@ class ToolCall(BaseModel):
     type: str
     # Function details of the tool call
     function: dict
+
+
+class ActionGuardDecision(str, Enum):
+    ALLOW = "ALLOW"
+    BLOCK = "BLOCK"
+
+
+# Action guard callable type: receives a ToolCall and returns a GuardDecision
+AgentActionGuard = Callable[[ToolCall], ActionGuardDecision]
 
 
 class Chunk(BaseModel):
