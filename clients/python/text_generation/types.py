@@ -34,7 +34,7 @@ class ActionGuardDecision(str, Enum):
     BLOCK = "BLOCK"
 
 
-# Action guard callable type: receives a ToolCall and returns a GuardDecision
+# Action guard callable type: receives a ToolCall and returns an ActionGuardDecision
 AgentActionGuard = Callable[[ToolCall], ActionGuardDecision]
 
 
