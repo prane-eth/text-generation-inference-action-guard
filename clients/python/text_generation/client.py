@@ -222,16 +222,16 @@ class Client:
                 higher are kept for generation
             tools (`List[Tool]`):
                 List of tools to use
-            action_guard (`Callable[[ToolCall], GuardDecision]`):
-                Optional callable invoked for each pending tool. Return `GuardDecision.BLOCK` to
-                prevent the request from being sent for blocked tool calls.
+            action_guard (`Callable[[ToolCall], ActionGuardDecision]`):
+                Optional callable invoked for each pending tool call in the model response. Return
+                `ActionGuardDecision.BLOCK` to prevent blocked tool calls from being executed when
+                processing the response.
             tool_prompt (`str`):
                 A prompt to be appended before the tools
             tool_choice (`str`):
                 The tool to use
             stop (`List[str]`):
                 Stop generating tokens if a member of `stop` is generated
-
         """
         request = ChatRequest(
             model="tgi",
