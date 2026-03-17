@@ -66,8 +66,8 @@ print(deployed_models())
 ### Action Guard (tool-call validation)
 
 You can pass an `action_guard` callable to `Client.chat` / `AsyncClient.chat` to centrally validate
-tool-calls (actions) before they are executed. The guard receives a `ToolCall` and should return a
-`GuardDecision` (`ALLOW` or `BLOCK`). If `BLOCK` is returned for any pending action, the client will
+tool-calls (actions) before they are executed. The guard receives a `tool_call` and should return an
+`ActionGuardDecision` (`ALLOW` or `BLOCK`). If `BLOCK` is returned for any pending action, the client will
 raise a `text_generation.errors.ValidationError` and prevent execution.
 
 Example:
@@ -75,14 +75,14 @@ Example:
 ```python
 from agent_action_guard import is_action_harmful
 from text_generation import Client
-from text_generation.types import GuardDecision, Tool
+from text_generation.types import ActionGuardDecision, Tool
 
 def my_guard(tool_call):
     # This can use code-based validation or a classifier model
-    is_harmful, confidence = is_action_harmful(action)
+    is_harmful, confidence = is_action_harmful(tool_call)
     if is_harmful:
-        return GuardDecision.BLOCK
-    return GuardDecision.ALLOW
+        return ActionGuardDecision.BLOCK
+    return ActionGuardDecision.ALLOW
 
 client = Client("https://your-endpoint")
 tools = [Tool(type="http", function={"name": "fetch", "url": "http://example"})]
