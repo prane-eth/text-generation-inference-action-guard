@@ -2,7 +2,7 @@ import pytest
 
 from text_generation import Client, AsyncClient
 from text_generation.errors import ValidationError
-from text_generation.types import Message, ActionGuardDecision, ToolCall
+from text_generation.types import Message, ActionGuardDecision, ToolCall, ChatCompletionChunk
 
 
 # Shared payload and helpers to avoid repetition across tests
@@ -164,7 +164,8 @@ def test_action_guard_allows_tool_call_in_stream_sync(
         tc = ToolCall(id=1, type="http", function={"name": "fetch"})
         if action_guard is not None and action_guard(tc) == ActionGuardDecision.BLOCK:
             raise ValidationError("Tool call blocked by action_guard in stream")
-        yield _COMMON_PAYLOAD
+        # Yield a ChatCompletionChunk to match the documented streaming contract
+        yield ChatCompletionChunk(**_COMMON_PAYLOAD)
 
     monkeypatch.setattr(Client, "_chat_stream_response", _fake_stream)
 
@@ -173,7 +174,8 @@ def test_action_guard_allows_tool_call_in_stream_sync(
         stream=True,
         action_guard=_allowing_guard,
     )
-    assert next(gen)
+    first_chunk = next(gen)
+    assert isinstance(first_chunk, ChatCompletionChunk)
 
 
 @pytest.mark.asyncio
