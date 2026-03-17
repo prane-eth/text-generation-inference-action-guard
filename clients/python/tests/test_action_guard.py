@@ -76,13 +76,11 @@ def test_action_guard_blocks_tool_call_in_stream_sync(
     monkeypatch.setattr(Client, "_chat_stream_response", _fake_stream)
 
     with pytest.raises(ValidationError):
-        gen = client.chat(
+        client.chat(
             messages=[Message(role="user", content="hello")],
             stream=True,
             action_guard=_blocking_guard,
         )
-        # exception may be raised when creating the generator or when iterating
-        assert next(gen)
 
 
 @pytest.mark.asyncio
